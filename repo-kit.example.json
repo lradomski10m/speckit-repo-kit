@@ -1,0 +1,19 @@
+{
+  "agents": ["claude", "codex"],
+  "permissions": { "network": "off" },
+  "skills": [
+    {
+      "name": "algorithmic-art",
+      "source": "https://github.com/anthropics/skills.git",
+      "ref": "main",
+      "path": "skills/algorithmic-art"
+    },
+    { "name": "testing", "source": "../shared-skills/testing" }
+  ],
+  "claude": {
+    "marketplaces": {
+      "orchestral": { "source": "github", "repo": "orchestral-labs/agent-plugins" }
+    },
+    "plugins": ["repo-kit@orchestral"]
+  }
+}

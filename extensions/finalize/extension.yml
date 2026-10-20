@@ -1,0 +1,30 @@
+schema_version: "1.0"
+
+extension:
+  id: finalize
+  name: "Finalize"
+  version: "1.2.0"
+  description: "Takes an implemented feature to a green pull request: design sync, verify, test, review, push, branch CI, PR and PR checks; people merge"
+  author: orchestral-labs
+  repository: https://github.com/lradomski10m/speckit-repo-kit
+  license: Proprietary
+
+requires:
+  speckit_version: ">=1.1.0"
+
+provides:
+  commands:
+    - name: speckit.finalize.run
+      file: commands/speckit.finalize.run.md
+      description: "Finalize a feature to a green pull request ready for review, repairing failures on the way"
+
+hooks:
+  after_converge:
+    command: speckit.finalize.run
+    optional: true
+    prompt: "Finalize this feature (design sync, verify, test, review, push, branch CI, pull request, PR checks)?"
+    description: "Offer finalization once converge reports nothing left to build"
+
+tags:
+  - "delivery"
+  - "local"

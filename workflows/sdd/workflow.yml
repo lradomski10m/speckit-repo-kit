@@ -1,0 +1,76 @@
+schema_version: "1.0"
+workflow:
+  id: "sdd"
+  name: "SDD cycle to merge"
+  version: "1.2.0"
+  author: "orchestral-labs"
+  description: "Runs specify → plan → tasks → implement → finalize to a green pull request, with a person approving the spec and the plan and reviewing the PR"
+
+requires:
+  speckit_version: ">=1.1.0"
+  integrations:
+    # Advisory only: any integration that provides the core commands and the finalize extension works.
+    any:
+      - "claude"
+      - "codex"
+      - "agy"
+
+inputs:
+  spec:
+    type: string
+    required: true
+    prompt: "Describe what you want to build"
+  integration:
+    type: string
+    default: "auto"
+    prompt: "Integration to use (claude, codex, agy; 'auto' uses the project's default integration)"
+
+steps:
+  - id: specify
+    command: speckit.specify
+    integration: "{{ inputs.integration }}"
+    input:
+      args: "{{ inputs.spec }}"
+
+  - id: review-spec
+    type: gate
+    message: "Review the generated spec before planning."
+    options: [approve, reject]
+    on_reject: abort
+
+  - id: plan
+    command: speckit.plan
+    integration: "{{ inputs.integration }}"
+    input:
+      args: "{{ inputs.spec }}"
+
+  - id: review-plan
+    type: gate
+    message: "Review the plan before generating tasks."
+    options: [approve, reject]
+    on_reject: abort
+
+  - id: tasks
+    command: speckit.tasks
+    integration: "{{ inputs.integration }}"
+    input:
+      args: "{{ inputs.spec }}"
+
+  - id: implement
+    command: speckit.implement
+    integration: "{{ inputs.integration }}"
+    input:
+      args: "{{ inputs.spec }}"
+
+  # Design sync, verify, test, review, push, branch CI, pull request and PR checks.
+  - id: finalize
+    command: speckit.finalize.run
+    integration: "{{ inputs.integration }}"
+    input:
+      args: ""
+
+  - id: review-pr
+    type: gate
+    message: "The pull request is green. Review and merge it; for changes, comment on it and rerun /speckit-finalize-run --from verify."
+    options: [approve, reject]
+    on_reject: abort

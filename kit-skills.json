@@ -1,0 +1,22 @@
+{
+  "skills": [
+    {
+      "name": "canon-review",
+      "source": "https://github.com/npow/claude-skills.git",
+      "ref": "7e961cbbf2a03c34e0ae924f08342b323e184abb",
+      "path": "canon-review"
+    },
+    {
+      "name": "canon-pr-review",
+      "source": "https://github.com/npow/claude-skills.git",
+      "ref": "7e961cbbf2a03c34e0ae924f08342b323e184abb",
+      "path": "canon-pr-review"
+    },
+    {
+      "name": "canon-design-review",
+      "source": "https://github.com/npow/claude-skills.git",
+      "ref": "7e961cbbf2a03c34e0ae924f08342b323e184abb",
+      "path": "canon-design-review"
+    }
+  ]
+}

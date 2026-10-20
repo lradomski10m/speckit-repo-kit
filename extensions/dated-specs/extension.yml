@@ -1,0 +1,29 @@
+schema_version: "1.0"
+
+extension:
+  id: dated-specs
+  name: "Dated Spec Folders"
+  version: "1.0.0"
+  description: "Names each new feature folder specs/YYYY-MM-DD-<short-name>/ before /speckit-specify creates it"
+  author: orchestral-labs
+  repository: https://github.com/lradomski10m/speckit-repo-kit
+  license: Proprietary
+
+requires:
+  speckit_version: ">=1.1.0"
+
+provides:
+  commands:
+    - name: speckit.dated-specs.directory
+      file: commands/speckit.dated-specs.directory.md
+      description: "Choose the dated feature directory for the spec about to be created"
+
+hooks:
+  before_specify:
+    command: speckit.dated-specs.directory
+    optional: false
+    description: "Name the new feature folder specs/YYYY-MM-DD-<short-name>/"
+
+tags:
+  - "naming"
+  - "local"

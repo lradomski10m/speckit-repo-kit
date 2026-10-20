@@ -1,0 +1,52 @@
+# Finalization steps for /speckit-finalize-run, in order. Edit this list to fit the repository:
+# swap a command, drop a step or add one; the command reads it every time.
+#   id           unique per position (a step may repeat)
+#   run          a Spec Kit command (/speckit-...), a skill (skill:<name>), a shell command ($ ...)
+#                or gate (stop for a person)
+#   until        optional: repeat the step until this holds (no-new-tasks, green)
+#   description  what the step must achieve; the step fails if it does not
+#
+# Finalization ends with a green pull request handed to people to review and merge; it never
+# merges, arms auto-merge or queues the PR. The shell steps use the repository's named commands
+# (AGENTS.md): `make verify` and `make test` by default; replace them if the repo uses others.
+# The CI steps use this extension's scripts/checks.py (GitHub CLI): it polls quietly in one
+# process and prints one JSON result.
+steps:
+  - id: converge
+    run: /speckit-converge
+    until: no-new-tasks
+    description: "Every spec item is built: converge appends no new tasks and every task is checked."
+  - id: design-sync
+    run: skill:speckit-finalize-run
+    description: >-
+      For every area this change touched: update its docs/design/ doc, or create one from
+      docs/design/TEMPLATE.md when the change built or reshaped an area that has none, and list
+      this spec under "Built by". Write an ADR (docs/decisions/YYYY-MM-DD-<name>.md) for each item
+      under the plan's "Significant decisions". Update AGENTS.md / CLAUDE.md / the owning skill if
+      how agents should work changed. Set spec.md **Status** to Implemented.
+  - id: verify
+    run: $ make verify
+    description: "Every static check the repository defines passes; repair failures and repeat."
+  - id: test
+    run: $ make test
+    description: "Every test the change can reach passes, plus any integration test the spec marks as required."
+  - id: review
+    run: skill:canon-review
+    description: "Run canon-review (--mode auto) on the feature's diff against the base branch (git diff <base>...HEAD, with the commit log), not on a PR: render the review, do not post it. Fix every confirmed BLOCK and REQUEST_CHANGES finding and repeat from verify until the decision is APPROVE; a finding judged not to apply is listed with the reason. Keep the scorecard for the PR description."
+  - id: push
+    run: skill:speckit-finalize-run
+    description: "Merge the base branch into the feature branch, resolve conflicts keeping both sides' intent, rerun verify and test if anything changed, and push the feature branch (never main, never force). Keep the exact pushed commit."
+  - id: branch-ci
+    run: $ python3 .specify/extensions/finalize/scripts/checks.py branch
+    until: green
+    description: "The CI that runs on push passed on the pushed commit. A failure is diagnosed, fixed and pushed again, repeating from verify. `no-checks` means the repository runs CI only on pull requests: note it and continue."
+  - id: pr
+    run: skill:speckit-finalize-run
+    description: "Open the pull request with gh pr create, or update its description if it exists: link the spec, list each requirement with how it is tested, include the canon-review decision and scorecard, and name the issue it serves. Never merge it, arm auto-merge or add it to a queue. Keep the PR number."
+  - id: pr-ci
+    run: $ python3 .specify/extensions/finalize/scripts/checks.py pr
+    until: green
+    description: "Every check on the PR's head passed, including those the base branch requires. A failure or conflict is diagnosed, fixed and pushed again, repeating from verify."
+  - id: handoff
+    run: gate
+    description: "Stop: the PR is green and ready for people to review and merge. Review comments loop back with --from verify. Once it has merged, the spec is archived in the next change's PR (git mv specs/<name> specs/done/<name>, Status Done, specs/README.md row)."
