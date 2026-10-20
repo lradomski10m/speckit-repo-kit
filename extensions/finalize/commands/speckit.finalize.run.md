@@ -1,5 +1,5 @@
 ---
-description: "Finalize a feature: converge, design sync, verify, test, review, push, branch CI, pull request and PR checks, ending with a green PR for people to review and merge"
+description: "Finalize a feature: converge, design sync, verify, test, review, archive, push, branch CI, pull request and PR checks, ending with a green PR for people to review and merge; after the merge, offer worktree cleanup"
 ---
 
 # Finalize the feature
@@ -7,7 +7,8 @@ description: "Finalize a feature: converge, design sync, verify, test, review, p
 Drive the current feature from "implemented" to "a green pull request ready for review", using the
 steps in `.specify/extensions/finalize/finalize-config.yml`, in order. The list is the contract:
 never skip, reorder or add a step that is not in it. Finalization never merges the PR, arms
-auto-merge or queues it; people review and merge.
+auto-merge or queues it; people review and merge. After the merge, `--from cleanup` offers to
+remove the feature's worktrees.
 
 ## User Input
 
@@ -17,7 +18,9 @@ $ARGUMENTS
 
 Arguments: `--from <id>` and `--to <id>` bound the steps run (inclusive; default: first and last).
 An explicit bound completes only that segment, not the feature. After review comments, rerun with
-`--from verify`.
+`--from verify`. The archive step moves the spec to `specs/done/<name>/`: when resuming, resolve
+the feature from its moved path (`SPECIFY_FEATURE_DIRECTORY=specs/done/<name>`). Removing worktrees
+needs its own explicit approval of the listed paths; approval to ship does not cover it.
 
 ## Setup
 
@@ -69,6 +72,21 @@ failures, conflicts, pending checks and a waiting deadline are not blockers. Do 
 expand into unrelated infrastructure repairs. Report a real blocker with its evidence, the recovery
 tried, the external action required and the step to resume from.
 
+## Archive and worktree cleanup
+
+The spec is archived inside the feature PR, before it is pushed: `git mv specs/<name>
+specs/done/<name>`, **Status** Done, its `specs/README.md` row under Done, links to the old path
+updated. It reaches `specs/done/` on the base branch exactly when the feature merges; if the PR
+is closed instead, nothing moves. No separate archival PR.
+
+`cleanup` runs only after GitHub reports the PR merged. List the feature's worktree paths and ask
+for explicit approval of those paths before deleting any. A decline or no answer keeps them and
+does not undo completion. Inspect each approved worktree for uncommitted or untracked work, ignored
+files that exist nowhere else and running processes; keep anything unsafe to remove and say why.
+Remove approved, safe worktrees with `git worktree remove` from a checkout that stays, without
+force. Leave local branches intact. Never run an automatic sweep or broad cleanup that could
+remove worktrees nobody approved.
+
 ## Rules
 
 - Follow `AGENTS.md`. Push only the feature branch, never `main`, never force; never start CI
@@ -81,4 +99,6 @@ tried, the external action required and the step to resume from.
 ## Report
 
 Report the completed steps, the PR URL, the commit that was tested and its branch and PR check
-results. Say plainly whether the PR is green and ready for review, or which step stopped and why.
+results, and the archived spec path. Say plainly whether the PR is green and ready for review, or
+which step stopped and why. After cleanup, say whether worktree removal was approved, declined,
+pending or done, and list any worktree kept and why.

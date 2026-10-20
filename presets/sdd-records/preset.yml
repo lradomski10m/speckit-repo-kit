@@ -3,7 +3,7 @@ schema_version: "1.0"
 preset:
   id: "sdd-records"
   name: "SDD Records"
-  version: "1.2.0"
+  version: "1.3.0"
   description: "Plans name the design docs they read and the decisions that need an ADR; task lists always include tests and end with design-doc, agent-guidance, ADR, verify and finalize tasks"
   author: "orchestral-labs"
   repository: "https://github.com/lradomski10m/speckit-repo-kit"

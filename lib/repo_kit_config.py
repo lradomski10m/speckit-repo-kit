@@ -30,9 +30,11 @@ NETWORK_CHOICES = {"full", "off"}
 SKILL_NAME = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 WORKTREES = ".claude/worktrees"
 LOCK = "repo-kit.lock.json"
-# Skills every repository gets from the kit (finalize's review step uses canon-review). A repository
-# lists a skill of the same name in its own config to replace one.
-KIT_SKILLS = Path(__file__).resolve().parent.parent / "kit-skills.json"
+# Skills every repository gets from the kit (finalize's review step uses canon-review, its push
+# step pr-conflicts). A repository lists a skill of the same name in its own config to replace one.
+# A `kit:<path>` source is a folder inside this kit, so the lock never records a machine's path.
+KIT = Path(__file__).resolve().parent.parent
+KIT_SKILLS = KIT / "kit-skills.json"
 
 # Claude Code rules the kit manages: `apply` adds the ones the config asks for and removes the
 # others, so turning the network off takes its rules away again.
@@ -134,6 +136,11 @@ def tree_digest(root: Path) -> str:
 def fetch_skill(entry: dict, config_dir: Path, work: Path) -> tuple[Path, str]:
     """Return the skill's folder and the revision it came from (a commit, or "local")."""
     source, sub = entry["source"], entry.get("path", "")
+    if source.startswith("kit:"):
+        folder = (KIT / source[len("kit:"):] / sub).resolve()
+        if not (folder / "SKILL.md").is_file():
+            fail(f"skill {entry['name']!r}: no SKILL.md in {folder}")
+        return folder, "kit"
     if not is_git(source):
         folder = (config_dir / source / sub).resolve()
         if not (folder / "SKILL.md").is_file():
@@ -321,11 +328,15 @@ rerun the kit's `bootstrap.sh` after changing it.
   one branch each: `git worktree add {WORKTREES}/<name> -b <branch>`. Claude Code's
   `--worktree <name>` and subagent worktrees use the same place. Start Codex at the main checkout
   and work in a worktree from there: Codex cannot write the git data of a worktree it was started
-  in. Remove a worktree once its branch has merged: `git worktree remove {WORKTREES}/<name>`.
+  in. Remove a worktree only after its branch has merged and the person approved removing that
+  path (finalize's cleanup step asks): `git worktree remove {WORKTREES}/<name>`, never `--force`,
+  keeping the local branch. Never sweep worktrees nobody approved.
+- **Conflicts.** Bring a branch up to date by merging the base branch, never by rebasing or
+  force-pushing; resolve conflicts by intent and ask when unclear (skill `pr-conflicts`).
 - **Skills.** Each skill has one copy, in `.agents/skills/<name>/`: Codex and Antigravity read it
-  there, and `.claude/skills/<name>` links to it. Skills from other repositories ({external}) are
-  pinned in `repo-kit.json` and recorded in `repo-kit.lock.json`: never edit them here; change
-  them where they come from and bump the pin. Spec Kit's `speckit-*` skills are generated: never
+  there, and `.claude/skills/<name>` links to it. Skills installed by the kit or from other
+  repositories ({external}) are recorded in `repo-kit.lock.json`: never edit them here; change
+  them where they come from (the kit, or the pinned repository) and rerun the kit. Spec Kit's `speckit-*` skills are generated: never
   edit them by hand.
 - **Permissions** live in `.claude/settings.json` and `.codex/config.toml`. Each person approves
   them once, when their agent first asks to trust this folder.

@@ -1,6 +1,10 @@
 {
   "skills": [
     {
+      "name": "pr-conflicts",
+      "source": "kit:skills/pr-conflicts"
+    },
+    {
       "name": "canon-review",
       "source": "https://github.com/npow/claude-skills.git",
       "ref": "7e961cbbf2a03c34e0ae924f08342b323e184abb",

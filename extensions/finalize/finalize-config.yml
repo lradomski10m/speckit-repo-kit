@@ -7,7 +7,9 @@
 #   description  what the step must achieve; the step fails if it does not
 #
 # Finalization ends with a green pull request handed to people to review and merge; it never
-# merges, arms auto-merge or queues the PR. The shell steps use the repository's named commands
+# merges, arms auto-merge or queues the PR. The spec is archived inside that PR, so it reaches
+# specs/done/ on the base branch exactly when the feature merges. After the merge, rerunning with
+# --from cleanup offers to remove the feature's worktrees. The shell steps use the repository's named commands
 # (AGENTS.md): `make verify` and `make test` by default; replace them if the repo uses others.
 # The CI steps use this extension's scripts/checks.py (GitHub CLI): it polls quietly in one
 # process and prints one JSON result.
@@ -33,9 +35,12 @@ steps:
   - id: review
     run: skill:canon-review
     description: "Run canon-review (--mode auto) on the feature's diff against the base branch (git diff <base>...HEAD, with the commit log), not on a PR: render the review, do not post it. Fix every confirmed BLOCK and REQUEST_CHANGES finding and repeat from verify until the decision is APPROVE; a finding judged not to apply is listed with the reason. Keep the scorecard for the PR description."
+  - id: archive
+    run: skill:speckit-finalize-run
+    description: "Archive the spec in the feature branch: git mv specs/<name> specs/done/<name>, set spec.md **Status** to Done, move its row in specs/README.md to Done and update links to the old path. Commit it with the feature. If it is already under specs/done/, verify that state."
   - id: push
     run: skill:speckit-finalize-run
-    description: "Merge the base branch into the feature branch, resolve conflicts keeping both sides' intent, rerun verify and test if anything changed, and push the feature branch (never main, never force). Keep the exact pushed commit."
+    description: "Merge the base branch into the feature branch (never rebase), resolve conflicts by intent as the pr-conflicts skill describes (ask when the right resolution is unclear), rerun verify and test if anything changed, and push the feature branch (never main, never force). Keep the exact pushed commit."
   - id: branch-ci
     run: $ python3 .specify/extensions/finalize/scripts/checks.py branch
     until: green
@@ -49,4 +54,15 @@ steps:
     description: "Every check on the PR's head passed, including those the base branch requires. A failure or conflict is diagnosed, fixed and pushed again, repeating from verify."
   - id: handoff
     run: gate
-    description: "Stop: the PR is green and ready for people to review and merge. Review comments loop back with --from verify. Once it has merged, the spec is archived in the next change's PR (git mv specs/<name> specs/done/<name>, Status Done, specs/README.md row)."
+    description: "Stop: the PR is green and ready for people to review and merge. Review comments loop back with --from verify. After it merges, continue with --from cleanup."
+  - id: cleanup
+    run: skill:speckit-finalize-run
+    description: >-
+      Only once GitHub reports the PR merged (checks.py pr says `merged`; otherwise stop and say
+      it is not merged yet). List the feature's worktree paths and ask the person to approve
+      removing them; approval to ship does not count. Declined or unanswered: keep them, report
+      cleanup declined or pending, and the feature is still complete. For each approved path,
+      check for uncommitted or untracked work, ignored files found nowhere else, and running
+      processes; keep any unsafe one and say why. Remove only approved, safe paths with
+      git worktree remove from a checkout that stays, never --force. Leave local branches intact,
+      and run no automatic sweep or broad cleanup that could touch other worktrees.

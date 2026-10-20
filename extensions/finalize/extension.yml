@@ -3,7 +3,7 @@ schema_version: "1.0"
 extension:
   id: finalize
   name: "Finalize"
-  version: "1.2.0"
+  version: "1.3.0"
   description: "Takes an implemented feature to a green pull request: design sync, verify, test, review, push, branch CI, PR and PR checks; people merge"
   author: orchestral-labs
   repository: https://github.com/lradomski10m/speckit-repo-kit

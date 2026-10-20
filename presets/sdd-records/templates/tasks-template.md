@@ -162,8 +162,9 @@ current (design docs, agent guidance, ADRs). Keep the last five tasks in every t
 - [ ] TXXX Write ADR `docs/decisions/YYYY-MM-DD-<kebab-name>.md` for decision X (one task per item
   under the plan's "Significant decisions"; drop this task only when that list is "None")
 - [ ] TXXX Run the repository's `verify`, then `test` commands (named in `AGENTS.md`)
-- [ ] TXXX Run `/speckit-finalize-run`: review, push, repair until branch CI passes, open the PR
-  and repair until its checks pass; people review and merge
+- [ ] TXXX Run `/speckit-finalize-run`: review, archive the spec into `specs/done/` in the feature
+  PR, push, repair until branch CI and the PR's checks pass; people review and merge; afterwards
+  `--from cleanup` offers worktree removal (explicit approval, branches kept)
 
 ---
 
