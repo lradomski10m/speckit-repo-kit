@@ -139,12 +139,14 @@ def main() -> int:
     if min(args.interval, args.timeout, args.no_checks_after) <= 0:
         parser.error("--interval, --timeout and --no-checks-after must be positive")
     repo = args.repo or gh("repo", "view", "--json", "nameWithOwner")["nameWithOwner"]
+    branch = subprocess.run(
+        ["git", "branch", "--show-current"], capture_output=True, text=True, check=True
+    ).stdout.strip()
     if args.what == "branch":
-        target = args.target or subprocess.run(
-            ["git", "branch", "--show-current"], capture_output=True, text=True, check=True
-        ).stdout.strip()
+        target = args.target or branch
     else:
-        target = args.target or str(gh("pr", "view", "--json", "number", "-R", repo)["number"])
+        # With --repo, gh needs the branch named explicitly to find its pull request.
+        target = args.target or str(gh("pr", "view", branch, "--json", "number", "-R", repo)["number"])
 
     def poll() -> Result:
         if args.what == "branch":

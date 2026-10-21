@@ -1,6 +1,42 @@
 {
-  "agents": ["claude", "codex"],
-  "permissions": { "network": "off" },
+  "agents": [
+    "claude",
+    "codex"
+  ],
+  "permissions": {
+    "network": "off"
+  },
+  "commands": {
+    "verify": "ruff check .",
+    "test": "pytest -q"
+  },
+  "prerequisites": {
+    "doc": "docs/prerequisites.md",
+    "groups": {
+      "core": {
+        "tools": [
+          {
+            "name": "uv",
+            "min": "0.9",
+            "mac": "brew install uv",
+            "linux": "curl -LsSf https://astral.sh/uv/install.sh | sh"
+          }
+        ]
+      },
+      "cloud": {
+        "description": "Inspect and change cloud resources",
+        "tools": [
+          {
+            "name": "aws",
+            "min": "2.0",
+            "mac": "brew install awscli",
+            "linux": "curl -fsSL https://awscli.amazonaws.com/v2/install.sh | bash",
+            "then": "aws sso login"
+          }
+        ]
+      }
+    }
+  },
   "skills": [
     {
       "name": "algorithmic-art",
@@ -8,12 +44,20 @@
       "ref": "main",
       "path": "skills/algorithmic-art"
     },
-    { "name": "testing", "source": "../shared-skills/testing" }
+    {
+      "name": "testing",
+      "source": "../shared-skills/testing"
+    }
   ],
   "claude": {
     "marketplaces": {
-      "orchestral": { "source": "github", "repo": "orchestral-labs/agent-plugins" }
+      "orchestral": {
+        "source": "github",
+        "repo": "orchestral-labs/agent-plugins"
+      }
     },
-    "plugins": ["repo-kit@orchestral"]
+    "plugins": [
+      "repo-kit@orchestral"
+    ]
   }
 }

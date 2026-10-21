@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Set up Spec Kit in a repository with this kit's extensions, preset, workflow and record folders.
+# Set up Spec Kit in a repository with this kit's extensions, templates, workflow and record folders.
 #
 #   bootstrap.sh [--config <file>] [--network full|off] [--refresh] <repo-path>
 #
@@ -94,10 +94,11 @@ for ext in dated-specs finalize; do
         specify extension add --dev "$KIT/extensions/$ext" --force
     fi
 done
-if [ "$refresh" = 1 ] || ! installed preset sdd-records; then
-    echo "==> preset sdd-records"
-    [ "$refresh" = 1 ] && specify preset remove sdd-records >/dev/null 2>&1 || true
-    specify preset add --dev "$KIT/presets/sdd-records"
+# The plan and tasks templates are repository overrides, not a Spec Kit preset: with any preset
+# installed, Spec Kit 1.1's scripts need PyYAML in the system python3, which a stock Python lacks.
+if installed preset sdd-records; then
+    echo "==> preset sdd-records: replaced by template overrides"
+    specify preset remove sdd-records >/dev/null
 fi
 if [ "$refresh" = 1 ] || ! installed workflow sdd; then
     echo "==> workflow sdd"
@@ -105,10 +106,16 @@ if [ "$refresh" = 1 ] || ! installed workflow sdd; then
     specify workflow add --dev "$KIT/workflows/sdd"
 fi
 
-# Spec Kit keeps an installed extension's config on reinstall; take the kit's version when the
-# repository has not edited it.
-cfg sync-file "$KIT/extensions/finalize/finalize-config.yml" "$repo" \
+# Spec Kit keeps an installed extension's config on reinstall; take the kit's version (its shell
+# steps rendered with the repository's verify and test commands) when the repository has not
+# edited it. The prerequisites checker is kept current the same way.
+cfg sync-file "$config" "$KIT/extensions/finalize/finalize-config.yml" "$repo" \
     .specify/extensions/finalize/finalize-config.yml | sed 's/^/==> /'
+cfg sync-file "$config" "$KIT/lib/prerequisites.py" "$repo" tools/prerequisites.py | sed 's/^/==> /'
+for template in plan-template tasks-template; do
+    cfg sync-file "$config" "$KIT/templates/$template.md" "$repo" \
+        ".specify/templates/overrides/$template.md" | sed 's/^/==> /'
+done
 
 # Spec Kit registers an extension's commands only for the default integration; `use` registers
 # them for each of the others too. The first agent is made the default again at the end.
@@ -135,12 +142,19 @@ done
 # context section in AGENTS.md that describes them.
 cfg apply "$config" "$repo" | sed 's/^/==> /'
 
+# Agents run Spec Kit's scripts directly (`.specify/scripts/bash/setup-plan.sh --json`), so they
+# must be executable whatever mode they were written with
+# (`specify integration use` rewrites them without the executable bit, so this runs last).
+chmod +x .specify/scripts/bash/*.sh .specify/extensions/*/scripts/bash/*.sh 2>/dev/null || true
+
+{ read -r verify; read -r test; } <<< "$(cfg commands "$config")"
 cat <<EOF
 
 Done. Next:
   - write .specify/memory/constitution.md (/speckit-constitution);
-  - make sure AGENTS.md names the verify and test commands, and edit the shell steps in
-    .specify/extensions/finalize/finalize-config.yml if they are not 'make verify' and 'make test';
-  - commit .specify/, .claude/, .codex/, .agents/, AGENTS.md, CLAUDE.md, .gitignore,
-    repo-kit.json, repo-kit.lock.json and the record folders.
+  - make sure '$verify' and '$test' work (finalize runs them; set "commands" in repo-kit.json
+    to change them), and list the repository's host tools under "prerequisites" there
+    (check them with: python3 tools/prerequisites.py --group all);
+  - commit .specify/, .claude/, .codex/, .agents/, tools/prerequisites.py, AGENTS.md, CLAUDE.md,
+    .gitignore, repo-kit.json, repo-kit.lock.json and the record folders.
 EOF
