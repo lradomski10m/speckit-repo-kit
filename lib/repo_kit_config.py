@@ -5,7 +5,9 @@
   repo_kit_config.py network <config>                   print the network choice: full, off or unset
   repo_kit_config.py set-network <config> <full|off>    record the choice in the config
   repo_kit_config.py apply <config> <repo>              skills, permissions, worktrees, agent context
-  repo_kit_config.py sync-file <kit-file> <repo> <path> update a kit-supplied file the repo has not edited
+  repo_kit_config.py commands <config>                  print the verify and test commands, one per line
+  repo_kit_config.py sync-file <config> <kit-file> <repo> <path>
+                                                        update a kit-supplied file the repo has not edited
 
 Every write is idempotent and prints one line per change. The kit owns only what it writes: the
 rules and plugins it lists in .claude/settings.json, a marked block in .codex/config.toml and in
@@ -27,6 +29,9 @@ from pathlib import Path
 DEFAULT_AGENTS = ["claude", "codex"]
 KNOWN_AGENTS = {"claude": "Claude Code", "codex": "Codex", "agy": "Antigravity"}
 NETWORK_CHOICES = {"full", "off"}
+# The repository's named check commands. finalize-config.yml's shell steps are rendered from them.
+DEFAULT_COMMANDS = {"verify": "make verify", "test": "make test"}
+VERSION = re.compile(r"^\d+(\.\d+)*$")
 SKILL_NAME = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 WORKTREES = ".claude/worktrees"
 LOCK = "repo-kit.lock.json"
@@ -81,6 +86,32 @@ def network(config: dict) -> str:
     return choice
 
 
+def commands(config: dict) -> dict[str, str]:
+    given = config.get("commands", {})
+    if not isinstance(given, dict) or set(given) - set(DEFAULT_COMMANDS):
+        fail(f"commands may name only {sorted(DEFAULT_COMMANDS)}, got {given!r}")
+    for key, value in given.items():
+        if not isinstance(value, str) or not value.strip() or "\n" in value:
+            fail(f"commands.{key} must be one shell command line, got {value!r}")
+    return {**DEFAULT_COMMANDS, **given}
+
+
+def prerequisites(config: dict) -> None:
+    section = config.get("prerequisites", {})
+    if not isinstance(section, dict) or not isinstance(section.get("groups", {}), dict):
+        fail("prerequisites must be an object with a groups object")
+    for group, body in section.get("groups", {}).items():
+        if not SKILL_NAME.match(group) or not isinstance(body, dict):
+            fail(f"prerequisites group {group!r} must be a lowercase name mapping to an object")
+        for tool in body.get("tools", []):
+            if not isinstance(tool, dict) or not tool.get("name"):
+                fail(f"every tool in prerequisites group {group!r} needs a name")
+            if "min" in tool and not VERSION.match(str(tool["min"])):
+                fail(f"tool {tool['name']!r}: min must be a version like 1.2.3, got {tool['min']!r}")
+            if "args" in tool and not isinstance(tool["args"], list):
+                fail(f"tool {tool['name']!r}: args must be a list")
+
+
 def claude_plugins(config: dict, settings: dict) -> tuple[dict, list[str]]:
     claude = config.get("claude", {})
     marketplaces = claude.get("marketplaces", {})
@@ -119,6 +150,8 @@ def skills(config: dict) -> list[dict]:
 def check(config: dict, repo: Path) -> None:
     agents(config)
     network(config)
+    commands(config)
+    prerequisites(config)
     claude_plugins(config, read_json(repo / ".claude/settings.json"))
     skills(config)
 
@@ -312,6 +345,7 @@ def apply_gitignore(repo: Path) -> list[str]:
 
 def context_block(config: dict, choice: str) -> str:
     external = ", ".join(f"`{e['name']}`" for e in skills(config)) or "none yet"
+    checks = commands(config)
     network_line = {
         "full": "allowed: web fetch and search, and network access from shell commands.",
         "off": "off. Ask before fetching anything, and say what for.",
@@ -322,6 +356,9 @@ def context_block(config: dict, choice: str) -> str:
 Agents: {', '.join(KNOWN_AGENTS[n] for n in agents(config))}. Settings come from `repo-kit.json`;
 rerun the kit's `bootstrap.sh` after changing it.
 
+- **Checks.** Verify: `{checks['verify']}` (static checks, after each edit). Test: `{checks['test']}`
+  (before pushing). Finalize runs both. Host tools: `python3 tools/prerequisites.py` (add
+  `--group all` for every optional group).
 - **Writing.** Edit any file in this repository without asking. Nothing outside it.
 - **Network** is {network_line}
 - **Worktrees.** Parallel work happens in git worktrees under `{WORKTREES}/<name>/` (gitignored),
@@ -369,7 +406,15 @@ def file_digest(path: Path) -> str:
     return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def sync_file(kit_file: Path, repo: Path, relative: str) -> list[str]:
+def render(kit_file: Path, config: dict) -> bytes:
+    """The kit's file as this repository gets it: shell steps run the repository's own commands."""
+    text = kit_file.read_text()
+    for key, command in commands(config).items():
+        text = text.replace(f"run: $ {DEFAULT_COMMANDS[key]}\n", f"run: $ {command}\n")
+    return text.encode()
+
+
+def sync_file(kit_file: Path, config: dict, repo: Path, relative: str) -> list[str]:
     """Bring a kit-supplied file (finalize-config.yml) up to the kit's version unless edited here.
 
     Spec Kit keeps an installed extension's config on reinstall, which protects a repository's own
@@ -381,14 +426,16 @@ def sync_file(kit_file: Path, repo: Path, relative: str) -> list[str]:
     lock_path = repo / LOCK
     data = read_json(lock_path)
     files = data.setdefault("files", {})
-    kit = file_digest(kit_file)
+    content = render(kit_file, config)
+    kit = "sha256:" + hashlib.sha256(content).hexdigest()
     if not target.exists() or file_digest(target) == kit:
         if not target.exists():
             target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(kit_file, target)
+            target.write_bytes(content)
+            shutil.copymode(kit_file, target)
         changed = [] if files.get(relative) == kit else [f"{relative}: the kit's version"]
     elif file_digest(target) == files.get(relative):
-        shutil.copyfile(kit_file, target)
+        target.write_bytes(content)
         changed = [f"{relative}: updated to the kit's version"]
     else:
         # Edited here: report each new kit version once, then stay quiet until the next one.
@@ -398,7 +445,8 @@ def sync_file(kit_file: Path, repo: Path, relative: str) -> list[str]:
         noticed[relative] = kit
         write_json(lock_path, data)
         return [f"{relative} was edited here and the kit's version changed; compare with: "
-                f"diff {target} {kit_file}"]
+                f"diff {target} {kit_file} (the kit renders its shell steps from repo-kit.json "
+                "commands)"]
     files[relative] = kit
     write_json(lock_path, data)
     return changed
@@ -439,8 +487,10 @@ def main() -> None:
         config = load(path)
         config.setdefault("permissions", {})["network"] = args[2]
         write_json(path, config)
-    elif command == "sync-file" and len(args) == 4:
-        for line in sync_file(path, Path(args[2]), args[3]):
+    elif command == "commands" and len(args) == 2:
+        print("\n".join(commands(load(path)).values()))
+    elif command == "sync-file" and len(args) == 5:
+        for line in sync_file(Path(args[2]), load(path), Path(args[3]), args[4]):
             print(line)
     elif command == "apply" and len(args) == 3:
         for line in apply(path, Path(args[2])):
