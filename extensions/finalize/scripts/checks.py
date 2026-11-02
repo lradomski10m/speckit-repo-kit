@@ -44,14 +44,19 @@ class Result:
     reason: str = ""
 
 
-def gh(*args: str, allow_missing: bool = False):
+# Branch protection that cannot be read: not configured (404), or a private repository on a plan
+# without the feature (403 "Upgrade to GitHub Pro or make this repository public ...").
+NO_PROTECTION = r"HTTP 404|Not Found|HTTP 403.*(upgrade|not available)|(upgrade|not available).*HTTP 403"
+
+
+def gh(*args: str, allow_missing: bool = False, missing: str = r"HTTP 404|Not Found"):
     """Run gh and parse its JSON; retry what looks transient, raise on anything else."""
     for attempt in range(4):
         done = subprocess.run(["gh", *args], capture_output=True, text=True, timeout=60)
         if done.returncode == 0:
             return json.loads(done.stdout) if done.stdout.strip() else None
         detail = (done.stderr or done.stdout).strip()
-        if allow_missing and re.search(r"HTTP 404|Not Found", detail):
+        if allow_missing and re.search(missing, detail, re.I | re.S):
             return None
         if attempt < 3 and re.search(r"HTTP 5\d\d|timeout|connection reset|TLS", detail, re.I):
             time.sleep(5 * (attempt + 1))
@@ -76,9 +81,12 @@ def check_states(repo: str, sha: str) -> tuple[dict, dict]:
 
 def required_checks(repo: str, branch: str) -> set:
     found = gh("api", f"repos/{repo}/branches/{branch}/protection/required_status_checks",
-               allow_missing=True)
+               allow_missing=True, missing=NO_PROTECTION)
     if not found:
-        return set()  # no protection, or no permission to read it: judge every reported check
+        # No protection, or the plan does not offer it: judge every check reported on the PR head.
+        print("note: no required checks known for " + branch + "; judging every reported check",
+              file=sys.stderr)
+        return set()
     return set(found.get("contexts") or []) | {c["context"] for c in found.get("checks") or []}
 
 
