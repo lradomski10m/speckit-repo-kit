@@ -11,7 +11,8 @@
 
 Every write is idempotent and prints one line per change. The kit owns only what it writes: the
 rules and plugins it lists in .claude/settings.json, a marked block in .codex/config.toml and in
-AGENTS.md, and the skills named in the config. Everything else in those files is left alone.
+AGENTS.md, the "repo-kit-permissions" hook in .agents/hooks.json with its script in
+.agents/repo-kit/, and the skills named in the config. Everything else in those files is left alone.
 """
 
 from __future__ import annotations
@@ -29,6 +30,9 @@ from pathlib import Path
 DEFAULT_AGENTS = ["claude", "codex"]
 KNOWN_AGENTS = {"claude": "Claude Code", "codex": "Codex", "agy": "Antigravity"}
 NETWORK_CHOICES = {"full", "off"}
+# permissions.commands: "ask" (the agent's own prompts) or "all" (every shell command without
+# asking). Only Antigravity reads it so far; Claude Code and Codex keep the rules below.
+COMMAND_CHOICES = {"ask", "all"}
 # The repository's named check commands. finalize-config.yml's shell steps are rendered from them.
 DEFAULT_COMMANDS = {"verify": "make verify", "test": "make test"}
 VERSION = re.compile(r"^\d+(\.\d+)*$")
@@ -45,6 +49,23 @@ KIT_SKILLS = KIT / "kit-skills.json"
 # others, so turning the network off takes its rules away again.
 CLAUDE_BASE_RULES = ["Edit(/**)", "Bash(git worktree *)"]
 CLAUDE_NETWORK_RULES = ["WebFetch(domain:*)", "WebSearch"]
+
+# Antigravity reads permission rules only from the user's home (~/.gemini/...), never from the
+# repository, so the kit grants through a workspace hook instead: .agents/hooks.json routes tool
+# calls to .agents/repo-kit/approve.py, which answers "auto_approve" for what the config grants.
+# The kit owns that one named hook and that folder; other hooks in the file are left alone.
+AGY_HOOK = "repo-kit-permissions"
+AGY_HOOKS = ".agents/hooks.json"
+AGY_SCRIPT = ".agents/repo-kit/approve.py"
+AGY_SCRIPT_SOURCE = KIT / "lib/antigravity_approve.py"
+AGY_MATCHERS = {
+    # The documented tool names and the CLI's own (write_file, edit_file, read_file...).
+    "files": "view_file|read_file|write_file|write_to_file|create_file|edit_file|"
+             "replace_file_content|multi_replace_file_content|delete_file|list_dir|list_directory|"
+             "find_by_name|grep_search",
+    "commands": "run_command",
+    "network": "read_url_content|search_web|web_search|browser_.*",
+}
 
 BEGIN, END = "repo-kit:start", "repo-kit:end"
 
@@ -83,6 +104,16 @@ def network(config: dict) -> str:
     choice = config.get("permissions", {}).get("network", "unset")
     if choice not in NETWORK_CHOICES | {"unset"}:
         fail(f"permissions.network must be one of {sorted(NETWORK_CHOICES)}, got {choice!r}")
+    return choice
+
+
+def command_policy(config: dict) -> str:
+    permissions = config.get("permissions", {})
+    if not isinstance(permissions, dict):
+        fail(f"permissions must be an object, got {permissions!r}")
+    choice = permissions.get("commands", "ask")
+    if choice not in COMMAND_CHOICES:
+        fail(f"permissions.commands must be one of {sorted(COMMAND_CHOICES)}, got {choice!r}")
     return choice
 
 
@@ -149,6 +180,7 @@ def skills(config: dict) -> list[dict]:
 
 def check(config: dict, repo: Path) -> None:
     agents(config)
+    command_policy(config)
     network(config)
     commands(config)
     prerequisites(config)
@@ -330,6 +362,52 @@ def apply_codex(repo: Path, choice: str) -> list[str]:
     return [f".codex/config.toml: workspace writes, .git writable, network {choice}"]
 
 
+def agy_hook(config: dict, choice: str) -> dict:
+    """The kit's entry in .agents/hooks.json: one PreToolUse group per grant."""
+    groups = ["files"]
+    if command_policy(config) == "all":
+        groups.append("commands")
+    if choice == "full":
+        groups.append("network")
+    # Hooks run from inside the repository (the CLI runs them in .agents/), so git finds the
+    # checkout the session is in: a worktree uses its own committed copy of the script.
+    script = f'"$(git rev-parse --show-toplevel)/{AGY_SCRIPT}"'
+    return {"PreToolUse": [
+        {"matcher": AGY_MATCHERS[group],
+         "hooks": [{"type": "command", "command": f"python3 -I {script} {group}", "timeout": 10}]}
+        for group in groups
+    ]}
+
+
+def apply_agy(config: dict, repo: Path, choice: str) -> list[str]:
+    changed = []
+    script = repo / AGY_SCRIPT
+    source = AGY_SCRIPT_SOURCE.read_bytes()
+    if not script.exists() or script.read_bytes() != source:
+        script.parent.mkdir(parents=True, exist_ok=True)
+        script.write_bytes(source)
+        changed.append(f"{AGY_SCRIPT}: the kit's approval hook")
+
+    path = repo / AGY_HOOKS
+    try:
+        hooks = read_json(path)
+    except json.JSONDecodeError as error:
+        fail(f"{AGY_HOOKS} is not valid JSON ({error}); fix it so the kit can add its hook")
+    if not isinstance(hooks, dict):
+        fail(f"{AGY_HOOKS}: expected a JSON object of named hooks")
+    entry = agy_hook(config, choice)
+    if hooks.get(AGY_HOOK) != entry:
+        hooks[AGY_HOOK] = entry
+        write_json(path, hooks)
+        granted = ["files in the repository"]
+        if command_policy(config) == "all":
+            granted.append("all shell commands")
+        if choice == "full":
+            granted.append("web and browser")
+        changed.append(f"{AGY_HOOKS}: approve {', '.join(granted)}")
+    return changed
+
+
 def apply_gitignore(repo: Path) -> list[str]:
     path = repo / ".gitignore"
     text = path.read_text() if path.exists() else ""
@@ -350,16 +428,36 @@ def context_block(config: dict, choice: str) -> str:
         "full": "allowed: web fetch and search, and network access from shell commands.",
         "off": "off. Ask before fetching anything, and say what for.",
     }[choice]
+    names = agents(config)
+    where = {
+        "claude": "`.claude/settings.json` (Claude Code)",
+        "codex": "`.codex/config.toml` (Codex)",
+        "agy": f"`{AGY_HOOKS}` (Antigravity: a hook, `{AGY_SCRIPT}`, approves them)",
+    }
+    files = [where[n] for n in names]
+    places = files[0] if len(files) == 1 else ", ".join(files[:-1]) + " and " + files[-1]
+    trust_line = ""
+    trusting = [KNOWN_AGENTS[n] for n in names if n in ("claude", "codex")]
+    if trusting:
+        verb = "applies its rules" if len(trusting) == 1 else "apply theirs"
+        trust_line += f"\n  {' and '.join(trusting)} {verb} once the person approves trusting this folder."
+    if "agy" in names:
+        trust_line += ("\n  Antigravity loads the hook from the workspace itself; rules in the person's own\n"
+                       "  Antigravity settings still win over it.")
+    shell_line = ""
+    if "agy" in names and command_policy(config) == "all":
+        shell_line = ("\n- **Shell commands.** Antigravity runs any shell command in this repository without "
+                      "asking\n  (`permissions.commands` is `all`). Other agents ask as their own settings say.")
     return f"""<!-- {BEGIN}: written by speckit-repo-kit bootstrap.sh from repo-kit.json; change that file, not this section -->
 ## Agent setup
 
-Agents: {', '.join(KNOWN_AGENTS[n] for n in agents(config))}. Settings come from `repo-kit.json`;
+Agents: {', '.join(KNOWN_AGENTS[n] for n in names)}. Settings come from `repo-kit.json`;
 rerun the kit's `bootstrap.sh` after changing it.
 
 - **Checks.** Verify: `{checks['verify']}` (static checks, after each edit). Test: `{checks['test']}`
   (before pushing). Finalize runs both. Host tools: `python3 tools/prerequisites.py` (add
   `--group all` for every optional group).
-- **Writing.** Edit any file in this repository without asking. Nothing outside it.
+- **Writing.** Edit any file in this repository without asking. Nothing outside it.{shell_line}
 - **Network** is {network_line}
 - **Worktrees.** Parallel work happens in git worktrees under `{WORKTREES}/<name>/` (gitignored),
   one branch each: `git worktree add {WORKTREES}/<name> -b <branch>`. Claude Code's
@@ -375,8 +473,7 @@ rerun the kit's `bootstrap.sh` after changing it.
   repositories ({external}) are recorded in `repo-kit.lock.json`: never edit them here; change
   them where they come from (the kit, or the pinned repository) and rerun the kit. Spec Kit's `speckit-*` skills are generated: never
   edit them by hand.
-- **Permissions** live in `.claude/settings.json` and `.codex/config.toml`. Each person approves
-  them once, when their agent first asks to trust this folder.
+- **Permissions** live in {places}.{trust_line}
 <!-- {END} -->
 """
 
@@ -467,6 +564,8 @@ def apply(config_path: Path, repo: Path) -> list[str]:
         changed += apply_claude(config, repo, choice)
     if "codex" in names:
         changed += apply_codex(repo, choice)
+    if "agy" in names:
+        changed += apply_agy(config, repo, choice)
     changed += apply_gitignore(repo)
     changed += apply_context(config, repo, choice)
     return changed
