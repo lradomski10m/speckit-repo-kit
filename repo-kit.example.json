@@ -1,10 +1,12 @@
 {
   "agents": [
     "claude",
-    "codex"
+    "codex",
+    "agy"
   ],
   "permissions": {
-    "network": "off"
+    "network": "off",
+    "commands": "ask"
   },
   "commands": {
     "verify": "ruff check .",

@@ -25,6 +25,7 @@ Each repository commits a `repo-kit.json` at its root. Start from
 | --- | --- | --- |
 | `agents` | Agents to set up: `claude`, `codex`, `agy` (Antigravity). The first is Spec Kit's default | `["claude", "codex"]` |
 | `permissions.network` | `full` or `off`. If it isn't set, the script asks the person running it (or takes `--network`) and writes the answer here; it never grants network access silently | asked |
+| `permissions.commands` | `ask` or `all`. `all` lets Antigravity run every shell command in the repository without asking. Only Antigravity reads it; Claude Code and Codex keep the rules below | `ask` |
 | `skills` | Skills from elsewhere: `name`, `source` (a git URL, or a path relative to this file), `ref` (tag, branch or commit; required for git), `path` (the folder inside the source) | none |
 | `claude.marketplaces` | Claude Code plugin marketplaces, by name. Each value is a marketplace source, passed through unchanged | none |
 | `claude.plugins` | Plugins to enable, as `<plugin>@<marketplace>` | none |
@@ -42,17 +43,39 @@ records the exact commit and a digest of each copy. A copy edited by hand is ref
 overwritten (change the skill where it comes from and bump `ref`). A skill removed from the config
 is removed from the repository.
 
-**Permissions**, written into committed files. Each person approves them once, when their agent
-asks to trust the folder:
+**Permissions**, written into committed files. Claude Code and Codex apply theirs once each person
+approves trusting the folder; Antigravity runs its workspace hook (below):
 
-| | Claude Code (`.claude/settings.json`) | Codex (`.codex/config.toml`, a marked block) |
-| --- | --- | --- |
-| Write in the repo | `Edit(/**)` | `sandbox_mode = "workspace-write"`, `approval_policy = "on-request"` |
-| Worktrees and commits | `Bash(git worktree *)` | `.git` writable (Codex keeps it read-only by default) |
-| Network, if `full` | `WebFetch(domain:*)` (also opens shell-command network under Claude's sandbox), `WebSearch` | `network_access = true`, `web_search = "live"` |
+| | Claude Code (`.claude/settings.json`) | Codex (`.codex/config.toml`, a marked block) | Antigravity (`.agents/hooks.json`, the `repo-kit-permissions` hook) |
+| --- | --- | --- | --- |
+| Read and write in the repo | `Edit(/**)` | `sandbox_mode = "workspace-write"`, `approval_policy = "on-request"` | File tools approved when every path they name is in the repository; anything outside is left to Antigravity |
+| Worktrees and commits | `Bash(git worktree *)` | `.git` writable (Codex keeps it read-only by default) | Shell commands, so only with `commands: all` |
+| Every shell command, if `commands` is `all` | (not managed) | (not managed) | `run_command` approved |
+| Network, if `full` | `WebFetch(domain:*)` (also opens shell-command network under Claude's sandbox), `WebSearch` | `network_access = true`, `web_search = "live"` | Web reading and search, and browser tools (`read_url_content`, `search_web`, `browser_*`) approved |
 
-Switching `network` to `off` removes those rules again. Rules the kit doesn't manage are left
-alone.
+Switching `network` to `off` (or `commands` to `ask`) removes those grants again. Rules and hooks
+the kit doesn't manage are left alone.
+
+**Antigravity's permissions are a hook, because it has no permission file in the repository.**
+Its rules (`allow`/`ask`/`deny` lists of `command(...)`, `write_file(...)`, `read_url(...)` and so
+on, and `toolPermission`) live in each person's `~/.gemini/antigravity-cli/settings.json`; its
+"Project" scope is kept in `~/.gemini/config/projects/`, and the app's per-project preset is set in
+its settings screen. None of those can be committed. What a workspace can carry is
+`.agents/hooks.json`, which the app, the CLI and the IDE all read, and a `PreToolUse` hook there may
+answer `auto_approve`: approve a call the default policy would otherwise ask about, while the
+person's own deny and ask rules still win. The kit owns the `repo-kit-permissions` entry in that
+file and `.agents/repo-kit/approve.py`, the script it runs (`python3` and `git` must be on `PATH`).
+Commit both: the hook runs the script of the checkout the session is in, so a worktree uses its
+branch's copy. Things the hook doesn't do:
+
+- It doesn't turn on Antigravity's terminal sandbox or put domains in its network allowlist
+  (`read_url` rules and `enableTerminalSandbox` are personal settings). With `commands: all`, an
+  approved command can reach the network whatever `network` says, so treat `all` as the broad
+  grant it is.
+- It never approves a file outside the repository, a shell command with `commands: ask`, or a web
+  or browser call with `network: off`; those prompt as Antigravity normally does.
+- Antigravity runs a workspace's hooks without asking first: the CLI ran this one in a folder it
+  had never been asked to trust. Review `.agents/hooks.json` in repositories you didn't write.
 
 **Worktrees** live in one standard place for both agents: `.claude/worktrees/<name>/`, which is
 added to `.gitignore`. It's Claude Code's default (`--worktree`, subagent worktrees), it's inside
@@ -73,8 +96,7 @@ current like `finalize-config.yml`; the tool list lives in `repo-kit.json`. A re
 wraps it as `make prerequisites`.
 
 **Antigravity** (`agy`) reads the same `.agents/skills/` folder as Codex, so it gets the
-`speckit-*` commands and every skill. The kit writes no permission settings for it, so
-Antigravity asks for write and network access its own way.
+`speckit-*` commands and every skill, and its permissions come from the hook above.
 
 **Plugins.** The Claude entries go into `.claude/settings.json` (`extraKnownMarketplaces`,
 `enabledPlugins`), and Claude Code offers to install them when the folder is trusted. A plugin only
@@ -90,6 +112,18 @@ because CI and cloud sessions don't load plugins.
   path is read correctly from the project file. `codex sandbox` doesn't load project files.
 - **Claude Code:** the rules follow the permissions and sandbox documentation (Claude Code
   2.1.302). They weren't exercised in a live session.
+- **Antigravity:** exercised with the CLI 1.5.4 in headless runs (`agy -p`), with the session's
+  settings at `{"toolPermission": "request-review"}` (`--settings`, never saved). Without the
+  hook, a shell command, a file write inside the folder and `read_url_content` were each refused
+  ("headless mode cannot prompt"). With it: `commands: all` ran a command, a write and an edit in
+  the repository went through and a write outside it was refused, and `network: full` fetched a
+  page; with `network: off` and `commands: ask` the command and the fetch were refused again while
+  repository writes still went through. The CLI's tool names differ from the documented ones
+  (`write_file` with `Path`, not `write_to_file` with `TargetFile`), so the hook judges file calls
+  by their path arguments and lists both names. Not checked: the Antigravity app and IDE (their
+  documentation says they read `.agents/hooks.json` the same way), interactive sessions, browser
+  tools, a person's deny or ask rule winning over the hook, and what Antigravity does when the
+  hook fails (for example a worktree whose branch doesn't have the script yet).
 
 ## What it installs
 
@@ -143,7 +177,8 @@ JSON), a bundle can replace `bootstrap.sh`.
 ## Changing the kit
 
 - Change the files here, bump the component's `version`, then run `bootstrap.sh --refresh` in
-  each repository.
+  each repository. Tests: `python3 -m unittest discover tests` and
+  `python3 -m unittest discover extensions/finalize/tests`.
 - `finalize-config.yml`, the template overrides and `tools/prerequisites.py` belong to each
   repository once installed, and Spec Kit keeps them on reinstall. The kit updates it only while the repository hasn't edited it: `repo-kit.lock.json`
   records the version the kit last wrote. An edited copy is left alone, and the next run prints
