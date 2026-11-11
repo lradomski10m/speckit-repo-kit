@@ -13,8 +13,9 @@ always end with the records work, and one finishing command that takes a feature
 Running it again is safe: anything already installed is skipped, and existing files are never
 overwritten.
 
-Needs: `git`, `bash`, `python3` (3.9+, standard library only) and the Spec Kit CLI 1.1.0 or
-newer (`specify`). Finalize's CI and pull-request steps use the GitHub CLI (`gh`).
+Needs: `git`, `bash`, Python 3.9+ (`python3`, `python` or `py -3`; standard library only) and the
+Spec Kit CLI 1.1.0 or newer (`specify`). Finalize's CI and pull-request steps use the GitHub CLI
+(`gh`). It runs on macOS and Linux, and on Windows under Git Bash ([Windows](#windows)).
 
 ## The config file
 
@@ -30,10 +31,31 @@ Each repository commits a `repo-kit.json` at its root. Start from
 | `claude.marketplaces` | Claude Code plugin marketplaces, by name. Each value is a marketplace source, passed through unchanged | none |
 | `claude.plugins` | Plugins to enable, as `<plugin>@<marketplace>` | none |
 | `commands.verify`, `commands.test` | The repository's static-check and test commands, one shell line each. Finalize's verify and test steps run them, and `AGENTS.md` names them | `make verify`, `make test` |
-| `prerequisites.groups` | Host tools by group: `<group>: {description, tools: [{name, min, args, mac, linux, then}]}`. `core` is always checked and always includes the kit's own tools (`python3`, `git`, `gh`, `specify`); a tool of the same name replaces the kit's. `min` is a minimum version, `args` the version command's arguments (default `--version`), `mac`/`linux` the install command, `then` a sign-in step | the kit's core tools |
+| `prerequisites.groups` | Host tools by group: `<group>: {description, tools: [{name, min, args, env, aliases, paths, mac, linux, windows, then}]}`. `core` is always checked and always includes the kit's own tools (`python3`, `git`, `gh`, `specify`); a tool of the same name replaces the kit's. Only `name` is required; the rest are under [Tool entries](#tool-entries) | the kit's core tools |
 | `prerequisites.doc` | A page for what a tool check can't show (accounts, sign-in), named when a check fails | none |
 
 The script checks the whole file before changing anything.
+
+### Tool entries
+
+Each tool under `prerequisites.groups.<group>.tools`:
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `name` | string, required | The executable's name on `PATH` (`shutil.which`, so `.exe` and the rest of `PATHEXT` are found on Windows) |
+| `min` | version string | The oldest version that will do. The version is the first `1.2[.3...]` in the output, so `4.7.2.stable.official.abc123` reads as `4.7.2` |
+| `args` | list of strings | The version command's arguments (default `["--version"]`) |
+| `env` | variable name | An environment variable naming the executable (a path, or a name on `PATH`), checked first: `"env": "GODOT"`. When it's set, it's the only place looked; set to something that doesn't run, the check fails and says so |
+| `aliases` | list of strings | Other names to try on `PATH` after `name`, in order: `["python", "py"]` |
+| `paths` | `{"mac": [...], "windows": [...], "linux": [...]}` | Where to look when it isn't on `PATH`, for each platform. Each entry may use `~`, environment variables (`$VAR`, `${VAR}`, and `%VAR%` on Windows) and glob patterns; of a pattern's matches the last in sorted order is taken (the newest, for names that carry a version) |
+| `mac`, `linux`, `windows` | string | The install command shown on that platform when the tool is missing or too old (e.g. `brew install ...`, `sudo apt install ...`, `winget install --id ... -e`) |
+| `then` | string | A step after installing, such as signing in |
+
+Lookup order: `env`, then `name` and `aliases` on `PATH`, then `paths` for this platform. Each
+place found is run in turn and the first that runs and is new enough is used, so Windows' `python3`
+stand-in (which only offers to install Python from the Store) gives way to `python` or `py`. The
+report names the executable when it isn't `name` on `PATH`: `ok godot 4.7.2
+(/Applications/Godot.app/Contents/MacOS/Godot)`.
 
 ### What it sets up from the file
 
@@ -64,9 +86,21 @@ its settings screen. None of those can be committed. What a workspace can carry 
 `.agents/hooks.json`, which the app, the CLI and the IDE all read, and a `PreToolUse` hook there may
 answer `auto_approve`: approve a call the default policy would otherwise ask about, while the
 person's own deny and ask rules still win. The kit owns the `repo-kit-permissions` entry in that
-file and `.agents/repo-kit/approve.py`, the script it runs (`python3` and `git` must be on `PATH`).
-Commit both: the hook runs the script of the checkout the session is in, so a worktree uses its
-branch's copy. Things the hook doesn't do:
+file and `.agents/repo-kit/`: `approve.py`, which decides, and `approve.sh`, which finds a Python
+3.9+ (`python3`, `python`, then `py -3`) to run it. Commit all three. The hook's command is the same
+line on every platform:
+
+```
+git -c "alias.repo-kit-approve=!sh .agents/repo-kit/approve.sh" repo-kit-approve <group>
+```
+
+Antigravity's documentation doesn't say which shell runs a hook command or where (the CLI runs
+`sh -c` in `.agents/` on macOS; on Windows it may be cmd or PowerShell). This line has nothing those
+shells read differently (no `$(...)`, `&&`, `||`, `;` or single quotes), and git runs an alias's
+command with its own `sh` (Git for Windows ships one) at the top of the checkout it's started in, so
+it works from any folder in the repository and a worktree uses its branch's copy. `git` and a
+Python must be on `PATH`; with no Python the hook answers `allow` and Antigravity asks as usual.
+Things the hook doesn't do:
 
 - It doesn't turn on Antigravity's terminal sandbox or put domains in its network allowlist
   (`read_url` rules and `enableTerminalSandbox` are personal settings). With `commands: all`, an
@@ -89,7 +123,8 @@ use worktrees. It's regenerated from the config on every run. A missing `CLAUDE.
 `@AGENTS.md`, so Claude Code reads the same file.
 
 **Checks and host tools.** `tools/prerequisites.py` (standard library only, so it runs before
-any environment exists) checks the tools in `prerequisites`: `python3 tools/prerequisites.py`,
+any environment exists) checks the tools in `prerequisites`: `python3 tools/prerequisites.py`
+(`python` or `py -3` on Windows),
 `--group <name>` or `--group all`, `--list`. It prints the install command for each missing or
 too-old tool and exits nonzero. It changes nothing and uses no network. The kit keeps the file
 current like `finalize-config.yml`; the tool list lives in `repo-kit.json`. A repository usually
@@ -123,7 +158,49 @@ because CI and cloud sessions don't load plugins.
   by their path arguments and lists both names. Not checked: the Antigravity app and IDE (their
   documentation says they read `.agents/hooks.json` the same way), interactive sessions, browser
   tools, a person's deny or ask rule winning over the hook, and what Antigravity does when the
-  hook fails (for example a worktree whose branch doesn't have the script yet).
+  hook fails (for example a worktree whose branch doesn't have the script yet). The git-alias form
+  of the command was re-checked with the CLI 1.5.6 on macOS (`commands: all` ran a command and wrote
+  a file; with `commands: ask` the command was refused and the write still went through), and by
+  the tests from `.agents/`, a subfolder and a worktree under `sh`, `bash` and `zsh`. Not run on
+  Windows (see below).
+
+## Windows
+
+Repositories set up by the kit are worked on from macOS and Windows alike. On Windows:
+
+- **Run `bootstrap.sh` from Git Bash** (Git for Windows), with `make` and Python on `PATH`
+  (`winget install --id Python.Python.3.12 -e`; Git Bash has no `make`, so install one, e.g.
+  `winget install --id ezwinports.make -e`, if the repository's `verify`/`test` commands use it). The
+  script finds Python as `python3`, `python` or `py -3`, passes Windows paths (`C:/...`) to it, and
+  installs Spec Kit's `sh` scripts, which agents run through Git Bash, so a repository keeps one set
+  of scripts for both systems. `chmod` changes nothing there; Git Bash runs a script by its `#!`
+  line.
+- **Line ends.** Git for Windows checks text out with CRLF by default, which breaks shell scripts.
+  The kit adds `*.sh text eol=lf` to the repository's `.gitattributes` (and has the same line
+  itself), writes every file with LF, and reads CRLF as LF when it compares digests, so a Windows
+  checkout of a skill or `finalize-config.yml` isn't taken for a hand edit.
+- **Symbolic links.** `.claude/skills/<name>` is a link to `.agents/skills/<name>`. Git checks a
+  link out as a link only where symbolic links can be made: on Windows, turn on Developer Mode
+  (Settings, System, For developers) and run `git config --global core.symlinks true` before
+  cloning (or re-checkout afterwards). Without that, git writes each link as a small text file
+  holding its target, and Claude Code doesn't find the skill. `bootstrap.sh` then replaces that file
+  with a link if it can, and otherwise with a copy of the skill, saying so: don't commit the copy
+  (it shows as a changed type in `git status`). The kit replaces its copy on each run and swaps it
+  for a link once the machine can make one.
+- **Antigravity's hook** uses the same committed command as on macOS (above); it needs `git` (which
+  brings `sh`) and Python on `PATH`.
+- **Host tools.** Give each tool a `windows` install command, and `env`, `aliases` or `paths` where
+  it isn't on `PATH` (a Godot download, say). The kit's own core tools have winget commands.
+- **Not handled:** finalize's CI steps run `python3 .specify/extensions/finalize/scripts/checks.py`;
+  on Windows that needs a `python3` that runs (a Python from the Store provides one; from
+  python.org, edit those two steps in the repository's `finalize-config.yml` to `py -3`).
+
+What was verified: everything above runs on macOS (the unit tests, a full `bootstrap.sh` run twice
+on a new repository, the hook through the Antigravity CLI). Windows' side was simulated in the tests
+(a `sys.platform` of `win32`, the `windows` entries chosen, links that can't be made, CRLF
+checkouts, a `python3` that doesn't run) and is otherwise reasoned, not run: Git Bash's handling of
+the script, `pwd -W`, Python's `%VAR%` expansion, `os.symlink` without the privilege, Git for
+Windows running an alias through its `sh`, and the shell Antigravity uses for hooks on Windows.
 
 ## What it installs
 
@@ -150,9 +227,10 @@ for both Codex and Antigravity), so a single kit serves all three.
    steps and `AGENTS.md`. Other step changes go in
    `.specify/extensions/finalize/finalize-config.yml`, which is meant to be edited per repo.
 3. List the repository's host tools under `prerequisites` and run
-   `python3 tools/prerequisites.py --group all`.
+   `python3 tools/prerequisites.py --group all` (`py -3 ...` on Windows).
 4. Commit `.specify/`, `.claude/`, `.codex/`, `.agents/`, `tools/prerequisites.py`, `AGENTS.md`,
-   `CLAUDE.md`, `.gitignore`, `repo-kit.json`, `repo-kit.lock.json` and the record folders.
+   `CLAUDE.md`, `.gitignore`, `.gitattributes`, `repo-kit.json`, `repo-kit.lock.json` and the
+   record folders.
 
 Design docs aren't written up front. Each one appears when a feature first builds or reshapes
 that area: the plan names it under "Design context", and `finalize` (step `design-sync`) writes it
