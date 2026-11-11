@@ -21,7 +21,8 @@
             "name": "uv",
             "min": "0.9",
             "mac": "brew install uv",
-            "linux": "curl -LsSf https://astral.sh/uv/install.sh | sh"
+            "linux": "curl -LsSf https://astral.sh/uv/install.sh | sh",
+            "windows": "winget install --id astral-sh.uv -e"
           }
         ]
       },
@@ -33,7 +34,37 @@
             "min": "2.0",
             "mac": "brew install awscli",
             "linux": "curl -fsSL https://awscli.amazonaws.com/v2/install.sh | bash",
+            "windows": "winget install --id Amazon.AWSCLI -e",
             "then": "aws sso login"
+          }
+        ]
+      },
+      "native": {
+        "description": "Build and run the game",
+        "tools": [
+          {
+            "name": "godot",
+            "min": "4.7",
+            "env": "GODOT",
+            "aliases": [
+              "godot4"
+            ],
+            "paths": {
+              "mac": [
+                "/Applications/Godot*.app/Contents/MacOS/Godot",
+                "~/Applications/Godot*.app/Contents/MacOS/Godot"
+              ],
+              "windows": [
+                "%LOCALAPPDATA%/Programs/Godot/Godot_v*_win64.exe",
+                "~/Desktop/Godot_v*/Godot_v*_win64_console.exe"
+              ],
+              "linux": [
+                "~/.local/bin/godot*"
+              ]
+            },
+            "mac": "brew install --cask godot",
+            "windows": "winget install --id GodotEngine.GodotEngine -e",
+            "linux": "flatpak install flathub org.godotengine.Godot"
           }
         ]
       }

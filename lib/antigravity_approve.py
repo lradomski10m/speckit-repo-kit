@@ -1,7 +1,8 @@
 """Antigravity PreToolUse hook written by speckit-repo-kit: approve what repo-kit.json grants.
 
-Installed as .agents/repo-kit/approve.py and run from .agents/hooks.json, which routes only the
-tools the config grants to it, with the group as the one argument:
+Installed as .agents/repo-kit/approve.py and run from .agents/hooks.json (through approve.sh,
+which finds a Python on macOS, Linux and Windows alike), which routes only the tools the config
+grants to it, with the group as the one argument:
 
   files     file tools (read, write, edit, list, search): approved when every path they name is
             in this repository
@@ -29,8 +30,10 @@ PATH_ARGS = ("Path", "AbsolutePath", "TargetFile", "DirectoryPath", "SearchDirec
 
 
 def inside(path: str) -> bool:
-    full = os.path.realpath(os.path.join(ROOT, os.path.expanduser(path)))
-    return full == ROOT or full.startswith(ROOT + os.sep)
+    # normcase: Windows paths compare without case and with either slash.
+    full = os.path.normcase(os.path.realpath(os.path.join(ROOT, os.path.expanduser(path))))
+    root = os.path.normcase(ROOT)
+    return full == root or full.startswith(root.rstrip(os.sep) + os.sep)
 
 
 def decide(group: str, call: dict) -> str:

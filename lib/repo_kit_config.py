@@ -11,8 +11,10 @@
 
 Every write is idempotent and prints one line per change. The kit owns only what it writes: the
 rules and plugins it lists in .claude/settings.json, a marked block in .codex/config.toml and in
-AGENTS.md, the "repo-kit-permissions" hook in .agents/hooks.json with its script in
-.agents/repo-kit/, and the skills named in the config. Everything else in those files is left alone.
+AGENTS.md, the "repo-kit-permissions" hook in .agents/hooks.json with its scripts in
+.agents/repo-kit/, one line each in .gitignore and .gitattributes, and the skills named in the
+config. Everything else in those files is left alone. Files are written as UTF-8 with LF line ends
+on every platform, so a Windows checkout and a macOS one write the same bytes.
 """
 
 from __future__ import annotations
@@ -36,6 +38,9 @@ COMMAND_CHOICES = {"ask", "all"}
 # The repository's named check commands. finalize-config.yml's shell steps are rendered from them.
 DEFAULT_COMMANDS = {"verify": "make verify", "test": "make test"}
 VERSION = re.compile(r"^\d+(\.\d+)*$")
+# prerequisites: install commands and candidate paths are per platform (tools/prerequisites.py).
+PLATFORMS = ("mac", "linux", "windows")
+ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 SKILL_NAME = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 WORKTREES = ".claude/worktrees"
 LOCK = "repo-kit.lock.json"
@@ -57,7 +62,17 @@ CLAUDE_NETWORK_RULES = ["WebFetch(domain:*)", "WebSearch"]
 AGY_HOOK = "repo-kit-permissions"
 AGY_HOOKS = ".agents/hooks.json"
 AGY_SCRIPT = ".agents/repo-kit/approve.py"
-AGY_SCRIPT_SOURCE = KIT / "lib/antigravity_approve.py"
+AGY_LAUNCHER = ".agents/repo-kit/approve.sh"
+AGY_FILES = {AGY_SCRIPT: KIT / "lib/antigravity_approve.py",
+             AGY_LAUNCHER: KIT / "lib/antigravity_approve.sh"}
+AGY_SCRIPT_SOURCE = AGY_FILES[AGY_SCRIPT]
+# The hook's command, one line for every platform. Antigravity doesn't document the shell it runs
+# hooks with: the CLI on macOS runs `sh -c` in .agents/, and on Windows it may be cmd or PowerShell.
+# A git alias works the same in all of them (no $(...), quotes or && the others read differently),
+# runs at the top of the checkout the session is in (so a worktree uses its own copy), and runs
+# through git's sh, which Git for Windows ships too; the launcher then finds a Python.
+AGY_ALIAS = "repo-kit-approve"
+AGY_COMMAND = f'git -c "alias.{AGY_ALIAS}=!sh {AGY_LAUNCHER}" {AGY_ALIAS}'
 AGY_MATCHERS = {
     # The documented tool names and the CLI's own (write_file, edit_file, read_file...).
     "files": "view_file|read_file|write_file|write_to_file|create_file|edit_file|"
@@ -74,13 +89,28 @@ def fail(message: str) -> None:
     sys.exit(f"repo-kit: {message}")
 
 
+def write_text(path: Path, text: str) -> None:
+    """Write UTF-8 with LF line ends on every platform (text mode would write CRLF on Windows)."""
+    path.write_bytes(text.encode("utf-8"))
+
+
+def text_bytes(path: Path) -> bytes:
+    """A file's bytes with CRLF read as LF, unless it is binary.
+
+    Git for Windows checks text out with CRLF by default (core.autocrlf), so the same committed
+    file reads differently there; digests use this so a checkout on Windows isn't taken for an edit.
+    """
+    data = path.read_bytes()
+    return data if b"\0" in data else data.replace(b"\r\n", b"\n")
+
+
 def read_json(path: Path) -> dict:
-    return json.loads(path.read_text()) if path.exists() else {}
+    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
 
 
 def write_json(path: Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2) + "\n")
+    write_text(path, json.dumps(data, indent=2) + "\n")
 
 
 def load(path: Path) -> dict:
@@ -139,8 +169,36 @@ def prerequisites(config: dict) -> None:
                 fail(f"every tool in prerequisites group {group!r} needs a name")
             if "min" in tool and not VERSION.match(str(tool["min"])):
                 fail(f"tool {tool['name']!r}: min must be a version like 1.2.3, got {tool['min']!r}")
-            if "args" in tool and not isinstance(tool["args"], list):
-                fail(f"tool {tool['name']!r}: args must be a list")
+            prerequisite_tool(tool)
+
+
+def strings(value: object) -> bool:
+    return isinstance(value, list) and all(isinstance(v, str) and v.strip() for v in value)
+
+
+def prerequisite_tool(tool: dict) -> None:
+    """A tool entry's optional keys, by type (tools/prerequisites.py trusts them)."""
+    name = tool["name"]
+    if not isinstance(name, str):
+        fail(f"tool name {name!r} must be a string")
+    if "args" in tool and not (isinstance(tool["args"], list)
+                               and all(isinstance(a, str) for a in tool["args"])):
+        fail(f"tool {name!r}: args must be a list of strings")
+    for key in (*PLATFORMS, "then"):
+        if key in tool and not (isinstance(tool[key], str) and tool[key].strip()):
+            fail(f"tool {name!r}: {key} must be a command line (a string)")
+    if "env" in tool and not (isinstance(tool["env"], str) and ENV_NAME.match(tool["env"])):
+        fail(f"tool {name!r}: env must name an environment variable, like GODOT, got {tool['env']!r}")
+    if "aliases" in tool and not strings(tool["aliases"]):
+        fail(f"tool {name!r}: aliases must be a list of executable names")
+    if "paths" in tool:
+        paths = tool["paths"]
+        if not isinstance(paths, dict) or set(paths) - set(PLATFORMS):
+            fail(f"tool {name!r}: paths must map {', '.join(PLATFORMS)} to lists of paths, "
+                 f"got {paths!r}")
+        for platform, listed in paths.items():
+            if not strings(listed):
+                fail(f"tool {name!r}: paths.{platform} must be a list of paths (globs allowed)")
 
 
 def claude_plugins(config: dict, settings: dict) -> tuple[dict, list[str]]:
@@ -194,7 +252,7 @@ def check(config: dict, repo: Path) -> None:
 def tree_digest(root: Path) -> str:
     digest = hashlib.sha256()
     for path in sorted(p for p in root.rglob("*") if p.is_file()):
-        digest.update(path.relative_to(root).as_posix().encode() + b"\0" + path.read_bytes() + b"\0")
+        digest.update(path.relative_to(root).as_posix().encode() + b"\0" + text_bytes(path) + b"\0")
     return "sha256:" + digest.hexdigest()
 
 
@@ -223,25 +281,64 @@ def fetch_skill(entry: dict, config_dir: Path, work: Path) -> tuple[Path, str]:
     return folder, commit.stdout.strip()
 
 
-def link_for_claude(repo: Path, name: str, changed: list[str]) -> None:
+def is_placeholder(path: Path, want: Path) -> bool:
+    """Git's stand-in for a symbolic link on a checkout without them (Windows, unless symlinks are
+    on): a small file holding the link's target."""
+    return path.is_file() and not path.is_symlink() and text_bytes(path).strip() == want.as_posix().encode()
+
+
+def link_for_claude(repo: Path, name: str, changed: list[str], kit_digests: set) -> None:
+    """Make .claude/skills/<name> a relative link to .agents/skills/<name>.
+
+    Where links can't be made (Windows without Developer Mode), the folder is copied instead and
+    the person is told not to commit the copy. A copy the kit made (its digest is one the lock
+    records) is replaced freely, by a link once this machine can make one; any other folder there
+    is refused.
+    """
     link = repo / ".claude/skills" / name
     want = Path("../../.agents/skills") / name
-    if link.is_symlink() and Path(os.readlink(link)) == want:
-        return
-    if link.exists() and not link.is_symlink():
-        fail(f".claude/skills/{name} is a real folder; the kit links it to .agents/skills/{name}")
-    link.parent.mkdir(parents=True, exist_ok=True)
+    source = repo / ".agents/skills" / name
+    was_copy = False
     if link.is_symlink():
+        if Path(os.readlink(link)) == want:
+            return
         link.unlink()
-    link.symlink_to(want)
-    changed.append(f"linked .claude/skills/{name}")
+    elif is_placeholder(link, want):
+        link.unlink()
+    elif link.is_dir():
+        digest = tree_digest(link)
+        if digest not in kit_digests:
+            fail(f".claude/skills/{name} is a real folder; the kit links it to .agents/skills/{name}")
+        was_copy = digest == tree_digest(source)
+        shutil.rmtree(link)
+    elif link.exists():
+        fail(f".claude/skills/{name} is a file; the kit links it to .agents/skills/{name}")
+    link.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        link.symlink_to(want, target_is_directory=True)
+        changed.append(f"linked .claude/skills/{name}")
+    except OSError:
+        shutil.copytree(source, link)
+        if not was_copy:
+            changed.append(f"copied .claude/skills/{name}: this machine can't make symbolic links "
+                           "(on Windows, turn on Developer Mode and run git config core.symlinks "
+                           "true); don't commit the copy")
+
+
+def remove_claude_link(repo: Path, name: str, digest: str) -> None:
+    link = repo / ".claude/skills" / name
+    if link.is_symlink() or is_placeholder(link, Path("../../.agents/skills") / name):
+        link.unlink()
+    elif link.is_dir() and tree_digest(link) == digest:
+        shutil.rmtree(link)
 
 
 def apply_skills(config: dict, config_dir: Path, repo: Path, use_claude: bool) -> list[str]:
     """Copy each listed skill into .agents/skills/<name>/ and link it for Claude Code.
 
     Codex and Antigravity read .agents/skills/ directly; Claude Code reads .claude/skills/, so each
-    skill gets a relative symlink there, never a second copy. repo-kit.lock.json records where each
+    skill gets a relative symlink there, never a second copy (unless this machine can't make links:
+    see link_for_claude). repo-kit.lock.json records where each
     copy came from and its digest, so a hand edit is refused rather than silently overwritten. A
     git skill is fetched again only when its pin changes; a local one on every run.
     """
@@ -269,12 +366,11 @@ def apply_skills(config: dict, config_dir: Path, repo: Path, use_claude: bool) -
                     changed.append(f"skill {name} ({revision[:12]})")
                 lock[name] = {**pin, "revision": revision, "digest": digest}
             if use_claude:
-                link_for_claude(repo, name, changed)
+                digests = {recorded.get("digest"), lock.get(name, {}).get("digest")} - {None}
+                link_for_claude(repo, name, changed, digests)
         for name in sorted(set(lock) - {e["name"] for e in entries}):
             shutil.rmtree(repo / ".agents/skills" / name, ignore_errors=True)
-            link = repo / ".claude/skills" / name
-            if link.is_symlink():
-                link.unlink()
+            remove_claude_link(repo, name, lock[name].get("digest", ""))
             del lock[name]
             changed.append(f"removed skill {name}")
     data = read_json(lock_path)
@@ -347,7 +443,7 @@ def replace_block(text: str, block: str, opening: str, closing: str, at_top: boo
 
 def apply_codex(repo: Path, choice: str) -> list[str]:
     path = repo / ".codex/config.toml"
-    text = path.read_text() if path.exists() else ""
+    text = path.read_text(encoding="utf-8") if path.exists() else ""
     outside = re.sub(re.escape(f"# {BEGIN}") + r".*?" + re.escape(f"# {END}") + r"\n?", "", text, flags=re.S)
     clash = re.search(r"^\s*(sandbox_mode|approval_policy|web_search|\[sandbox_workspace_write\]|"
                       r"sandbox_workspace_write\.)", outside, re.M)
@@ -358,7 +454,7 @@ def apply_codex(repo: Path, choice: str) -> list[str]:
     if new == text:
         return []
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(new)
+    write_text(path, new)
     return [f".codex/config.toml: workspace writes, .git writable, network {choice}"]
 
 
@@ -369,24 +465,24 @@ def agy_hook(config: dict, choice: str) -> dict:
         groups.append("commands")
     if choice == "full":
         groups.append("network")
-    # Hooks run from inside the repository (the CLI runs them in .agents/), so git finds the
-    # checkout the session is in: a worktree uses its own committed copy of the script.
-    script = f'"$(git rev-parse --show-toplevel)/{AGY_SCRIPT}"'
     return {"PreToolUse": [
         {"matcher": AGY_MATCHERS[group],
-         "hooks": [{"type": "command", "command": f"python3 -I {script} {group}", "timeout": 10}]}
+         "hooks": [{"type": "command", "command": f"{AGY_COMMAND} {group}", "timeout": 10}]}
         for group in groups
     ]}
 
 
 def apply_agy(config: dict, repo: Path, choice: str) -> list[str]:
     changed = []
-    script = repo / AGY_SCRIPT
-    source = AGY_SCRIPT_SOURCE.read_bytes()
-    if not script.exists() or script.read_bytes() != source:
-        script.parent.mkdir(parents=True, exist_ok=True)
-        script.write_bytes(source)
-        changed.append(f"{AGY_SCRIPT}: the kit's approval hook")
+    for relative, kit_file in AGY_FILES.items():
+        script = repo / relative
+        source = text_bytes(kit_file)
+        # Raw bytes: a launcher checked out with CRLF (Git for Windows' default) breaks sh.
+        if not script.exists() or script.read_bytes() != source:
+            script.parent.mkdir(parents=True, exist_ok=True)
+            script.write_bytes(source)
+            script.chmod(0o755)
+            changed.append(f"{relative}: the kit's approval hook")
 
     path = repo / AGY_HOOKS
     try:
@@ -410,12 +506,26 @@ def apply_agy(config: dict, repo: Path, choice: str) -> list[str]:
 
 def apply_gitignore(repo: Path) -> list[str]:
     path = repo / ".gitignore"
-    text = path.read_text() if path.exists() else ""
+    text = path.read_text(encoding="utf-8") if path.exists() else ""
     entry = f"/{WORKTREES}/"
     if entry in text.splitlines():
         return []
-    path.write_text(text + ("\n" if text and not text.endswith("\n") else "") + entry + "\n")
+    write_text(path, text + ("\n" if text and not text.endswith("\n") else "") + entry + "\n")
     return [f".gitignore: {entry}"]
+
+
+GITATTRIBUTES = "*.sh text eol=lf"
+
+
+def apply_gitattributes(repo: Path) -> list[str]:
+    """Shell scripts keep LF line ends in every checkout: Spec Kit's scripts and the Antigravity
+    hook's launcher run under sh (Git Bash on Windows), which fails on a CRLF checkout."""
+    path = repo / ".gitattributes"
+    text = path.read_text(encoding="utf-8") if path.exists() else ""
+    if GITATTRIBUTES in text.splitlines():
+        return []
+    write_text(path, text + ("\n" if text and not text.endswith("\n") else "") + GITATTRIBUTES + "\n")
+    return [f".gitattributes: {GITATTRIBUTES}"]
 
 
 # -- agent context ---------------------------------------------------------------------------
@@ -455,8 +565,8 @@ Agents: {', '.join(KNOWN_AGENTS[n] for n in names)}. Settings come from `repo-ki
 rerun the kit's `bootstrap.sh` after changing it.
 
 - **Checks.** Verify: `{checks['verify']}` (static checks, after each edit). Test: `{checks['test']}`
-  (before pushing). Finalize runs both. Host tools: `python3 tools/prerequisites.py` (add
-  `--group all` for every optional group).
+  (before pushing). Finalize runs both. Host tools: `python3 tools/prerequisites.py` (`py -3` on
+  Windows; add `--group all` for every optional group).
 - **Writing.** Edit any file in this repository without asking. Nothing outside it.{shell_line}
 - **Network** is {network_line}
 - **Worktrees.** Parallel work happens in git worktrees under `{WORKTREES}/<name>/` (gitignored),
@@ -481,17 +591,17 @@ rerun the kit's `bootstrap.sh` after changing it.
 def apply_context(config: dict, repo: Path, choice: str) -> list[str]:
     changed = []
     path = repo / "AGENTS.md"
-    text = path.read_text() if path.exists() else "# Agent instructions\n"
+    text = path.read_text(encoding="utf-8") if path.exists() else "# Agent instructions\n"
     new = replace_block(text, context_block(config, choice), f"<!-- {BEGIN}", f"<!-- {END}", at_top=False)
     if new != text:
-        path.write_text(new)
+        write_text(path, new)
         changed.append("AGENTS.md: agent setup section")
     if "claude" in agents(config):
         claude_md = repo / "CLAUDE.md"
         if not claude_md.exists():
-            claude_md.write_text("@AGENTS.md\n")
+            write_text(claude_md, "@AGENTS.md\n")
             changed.append("CLAUDE.md: imports AGENTS.md")
-        elif "AGENTS.md" not in claude_md.read_text():
+        elif "AGENTS.md" not in claude_md.read_text(encoding="utf-8"):
             changed.append("CLAUDE.md does not mention AGENTS.md: add the line @AGENTS.md")
     return changed
 
@@ -500,12 +610,12 @@ def apply_context(config: dict, repo: Path, choice: str) -> list[str]:
 
 
 def file_digest(path: Path) -> str:
-    return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+    return "sha256:" + hashlib.sha256(text_bytes(path)).hexdigest()
 
 
 def render(kit_file: Path, config: dict) -> bytes:
     """The kit's file as this repository gets it: shell steps run the repository's own commands."""
-    text = kit_file.read_text()
+    text = kit_file.read_text(encoding="utf-8")
     for key, command in commands(config).items():
         text = text.replace(f"run: $ {DEFAULT_COMMANDS[key]}\n", f"run: $ {command}\n")
     return text.encode()
@@ -567,6 +677,7 @@ def apply(config_path: Path, repo: Path) -> list[str]:
     if "agy" in names:
         changed += apply_agy(config, repo, choice)
     changed += apply_gitignore(repo)
+    changed += apply_gitattributes(repo)
     changed += apply_context(config, repo, choice)
     return changed
 

@@ -10,9 +10,15 @@
 #
 # Safe to run again: Spec Kit components already installed are skipped (--refresh reinstalls
 # them from this kit), and record-folder files that already exist are never overwritten.
+#
+# Runs on macOS and Linux, and on Windows under Git Bash (see the README's Windows section).
 set -euo pipefail
 
-KIT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# A folder's absolute path as Python sees it: on Windows (Git Bash) that's C:/..., not /c/...
+# (bash's own pwd -W); elsewhere plain pwd.
+abspath() { (cd "$1" && { pwd -W 2>/dev/null || pwd; }); }
+
+KIT="$(abspath "$(dirname "${BASH_SOURCE[0]}")")"
 SPECKIT_MIN="1.1.0"
 config=""
 network_flag=""
@@ -31,7 +37,7 @@ while [ $# -gt 0 ]; do
     esac
 done
 [ -n "$repo" ] || usage
-repo="$(cd "$repo" && pwd)"
+repo="$(abspath "$repo")"
 
 command -v specify >/dev/null || {
     echo "specify (Spec Kit CLI) is not on PATH: uv tool install specify-cli --from git+https://github.com/github/spec-kit.git@v$SPECKIT_MIN" >&2
@@ -43,11 +49,22 @@ if [ "$(printf '%s\n%s\n' "$SPECKIT_MIN" "$version" | sort -V | head -1)" != "$S
     exit 1
 fi
 git -C "$repo" rev-parse --show-toplevel >/dev/null 2>&1 || { echo "$repo is not a git repository" >&2; exit 1; }
-command -v python3 >/dev/null || { echo "python3 (3.9+) is needed to read repo-kit.json" >&2; exit 1; }
+# Python 3.9+: python3, else python, else Windows' launcher (py -3). On Windows python3 can be a
+# stand-in that only offers to install Python from the Store, so each is tried, not just found.
+python=()
+for candidate in python3 python "py -3"; do
+    read -r -a words <<< "$candidate"
+    if "${words[@]}" -c 'import sys; sys.exit(sys.version_info < (3, 9))' </dev/null >/dev/null 2>&1; then
+        python=("${words[@]}")
+        break
+    fi
+done
+[ ${#python[@]} -gt 0 ] || { echo "Python 3.9+ (python3, python or py -3) is needed to read repo-kit.json" >&2; exit 1; }
 
-[ -n "$config" ] && config="$(cd "$(dirname "$config")" && pwd)/$(basename "$config")"
+[ -n "$config" ] && config="$(abspath "$(dirname "$config")")/$(basename "$config")"
 config="${config:-$repo/repo-kit.json}"
-cfg() { python3 -I "$KIT/lib/repo_kit_config.py" "$@"; }
+# -X utf8: UTF-8 output whatever Windows' code page is (-I ignores PYTHONUTF8).
+cfg() { "${python[@]}" -I -X utf8 "$KIT/lib/repo_kit_config.py" "$@"; }
 cfg check "$config" "$repo"
 agents="$(cfg agents "$config")"
 
@@ -145,6 +162,7 @@ cfg apply "$config" "$repo" | sed 's/^/==> /'
 # Agents run Spec Kit's scripts directly (`.specify/scripts/bash/setup-plan.sh --json`), so they
 # must be executable whatever mode they were written with
 # (`specify integration use` rewrites them without the executable bit, so this runs last).
+# On Windows chmod changes nothing; Git Bash runs a script by its #! line.
 chmod +x .specify/scripts/bash/*.sh .specify/extensions/*/scripts/bash/*.sh 2>/dev/null || true
 
 { read -r verify; read -r test; } <<< "$(cfg commands "$config")"
@@ -154,7 +172,7 @@ Done. Next:
   - write .specify/memory/constitution.md (/speckit-constitution);
   - make sure '$verify' and '$test' work (finalize runs them; set "commands" in repo-kit.json
     to change them), and list the repository's host tools under "prerequisites" there
-    (check them with: python3 tools/prerequisites.py --group all);
+    (check them with: ${python[*]} tools/prerequisites.py --group all);
   - commit .specify/, .claude/, .codex/, .agents/, tools/prerequisites.py, AGENTS.md, CLAUDE.md,
-    .gitignore, repo-kit.json, repo-kit.lock.json and the record folders.
+    .gitignore, .gitattributes, repo-kit.json, repo-kit.lock.json and the record folders.
 EOF
