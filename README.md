@@ -72,6 +72,16 @@ too-old tool and exits nonzero. It changes nothing and uses no network. The kit 
 current like `finalize-config.yml`; the tool list lives in `repo-kit.json`. A repository usually
 wraps it as `make prerequisites`.
 
+**Orchestration.** The agent running a prompt is the planner and supervisor; it delegates the work
+to subagents, picks Opus, Sonnet or Haiku per task, uses medium reasoning effort by default and
+runs independent tasks in parallel. It's stated in the `AGENTS.md` section and in the tasks
+template (`[M:x]` model per task). For Claude Code it's enforced: `.claude/settings.json` gets a
+`PreToolUse` hook on the `Agent` tool running `tools/orchestration_guard.py` (kept current like
+`prerequisites.py`), which denies a subagent call that lacks `model` (haiku/sonnet/opus) or
+`effort`, or that is a fork (a fork inherits the supervisor's model). What no hook can check:
+whether the supervisor delegated at all, or chose a sensible model. Codex and Antigravity get the
+written rule only.
+
 **Antigravity** (`agy`) reads the same `.agents/skills/` folder as Codex, so it gets the
 `speckit-*` commands and every skill. The kit writes no permission settings for it, so
 Antigravity asks for write and network access its own way.

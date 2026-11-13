@@ -17,8 +17,15 @@ description: "Task list template for feature implementation"
 ## Format: `[ID] [P?] [Story] Description`
 
 - **[P]**: Can run in parallel (different files, no dependencies)
+- **[M:x]**: Model for the subagent that executes the task: `haiku` (lookups, mechanical edits),
+  `sonnet` (most implementation and tests), `opus` (hard design, debugging, review). Medium
+  reasoning effort unless the task says otherwise.
 - **[Story]**: Which user story this task belongs to (e.g., US1, US2, US3)
 - Include exact file paths in descriptions
+
+**Execution**: the agent running implement is the supervisor. It does not implement tasks itself:
+it dispatches each task to a subagent with the `[M:x]` model, runs every `[P]` group of ready tasks
+in parallel (one message, several subagents), reviews the results, and ticks the task off.
 
 ## Path Conventions
 

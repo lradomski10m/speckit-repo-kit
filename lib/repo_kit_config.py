@@ -46,6 +46,9 @@ KIT_SKILLS = KIT / "kit-skills.json"
 CLAUDE_BASE_RULES = ["Edit(/**)", "Bash(git worktree *)"]
 CLAUDE_NETWORK_RULES = ["WebFetch(domain:*)", "WebSearch"]
 
+# Claude Code hook enforcing the orchestration rule: subagent calls must name a model and effort.
+GUARD_COMMAND = 'python3 "$CLAUDE_PROJECT_DIR/tools/orchestration_guard.py"'
+
 BEGIN, END = "repo-kit:start", "repo-kit:end"
 
 
@@ -270,6 +273,11 @@ def apply_claude(config: dict, repo: Path, choice: str) -> list[str]:
             allow.remove(rule)
             changed.append(f"no longer allow {rule}")
 
+    hooks = settings.setdefault("hooks", {}).setdefault("PreToolUse", [])
+    if not any(h.get("command") == GUARD_COMMAND for e in hooks for h in e.get("hooks", [])):
+        hooks.append({"matcher": "Agent", "hooks": [{"type": "command", "command": GUARD_COMMAND}]})
+        changed.append("hook orchestration_guard (subagents need a model and effort)")
+
     marketplaces, plugins = claude_plugins(config, settings)
     for name, source in marketplaces.items():
         declared = settings.setdefault("extraKnownMarketplaces", {})
@@ -368,6 +376,16 @@ rerun the kit's `bootstrap.sh` after changing it.
   in. Remove a worktree only after its branch has merged and the person approved removing that
   path (finalize's cleanup step asks): `git worktree remove {WORKTREES}/<name>`, never `--force`,
   keeping the local branch. Never sweep worktrees nobody approved.
+- **Orchestration.** The agent running the prompt is the planner and supervisor, not the
+  implementer. It breaks the work into tasks, delegates each to a subagent, reviews what comes
+  back, and integrates. It edits files itself only for trivial glue. Pick the model per task:
+  Haiku for lookups and mechanical edits, Sonnet for most implementation and tests, Opus for hard
+  design, debugging and review. Use medium reasoning effort unless a task needs more. Run
+  independent tasks in parallel (one message, several subagents; separate worktrees when they
+  touch overlapping files) and serialize only real dependencies. Give each subagent the goal,
+  the files, and the acceptance check, since it has no other context. Claude Code enforces the
+  model and effort part with a hook (`tools/orchestration_guard.py`) that denies a subagent call
+  without them; the rest is on you.
 - **Conflicts.** Bring a branch up to date by merging the base branch, never by rebasing or
   force-pushing; resolve conflicts by intent and ask when unclear (skill `pr-conflicts`).
 - **Skills.** Each skill has one copy, in `.agents/skills/<name>/`: Codex and Antigravity read it

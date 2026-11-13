@@ -112,6 +112,7 @@ fi
 cfg sync-file "$config" "$KIT/extensions/finalize/finalize-config.yml" "$repo" \
     .specify/extensions/finalize/finalize-config.yml | sed 's/^/==> /'
 cfg sync-file "$config" "$KIT/lib/prerequisites.py" "$repo" tools/prerequisites.py | sed 's/^/==> /'
+cfg sync-file "$config" "$KIT/lib/orchestration_guard.py" "$repo" tools/orchestration_guard.py | sed 's/^/==> /'
 for template in plan-template tasks-template; do
     cfg sync-file "$config" "$KIT/templates/$template.md" "$repo" \
         ".specify/templates/overrides/$template.md" | sed 's/^/==> /'
@@ -155,6 +156,6 @@ Done. Next:
   - make sure '$verify' and '$test' work (finalize runs them; set "commands" in repo-kit.json
     to change them), and list the repository's host tools under "prerequisites" there
     (check them with: python3 tools/prerequisites.py --group all);
-  - commit .specify/, .claude/, .codex/, .agents/, tools/prerequisites.py, AGENTS.md, CLAUDE.md,
+  - commit .specify/, .claude/, .codex/, .agents/, tools/, AGENTS.md, CLAUDE.md,
     .gitignore, repo-kit.json, repo-kit.lock.json and the record folders.
 EOF
